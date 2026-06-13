@@ -8,11 +8,16 @@ A **modular, production-ready** Python automation tool that scrapes Google Maps 
 
 | File | Purpose |
 |------|---------|
-| `scraper.py` | Main automation script (all 6 modular functions) |
-| `config.py` | Central configuration — queries, delays, output settings |
+| `scraper.py` | Main automation script (runs maps scraping workflow) |
+| `config.py` | Central configuration — queries, delays, filters, and output settings |
+| `db_manager.py` | SQLite database manager for tracking lead records and finding competitors |
+| `filter_leads.py` | Post-processing script to filter out big brands, malls, and chain businesses |
+| `manage_leads.py` | Command Line Interface to list, query, and update lead statuses in SQLite |
+| `generate_pitch.py` | Script to generate custom landing pages/pitches for high-priority leads |
+| `deploy.py` | Automation script to commit and push client pitches to GitHub |
 | `requirements.txt` | Python dependencies |
-| `delhi_leads.xlsx` | Output file (generated after run) |
-| `scraper.log` | Log file (generated after run) |
+| `delhi_leads.xlsx` | Output Excel spreadsheet (generated after run) |
+| `leads.db` | SQLite database containing all lead histories and status information |
 
 ---
 
@@ -74,6 +79,44 @@ python scraper.py -q "salons in Delhi" -m 35 -o "salon_leads.xlsx"
 | `--query` | `-q` | From `config.py` | Search term for Google Maps |
 | `--max` | `-m` | `50` | Max results to collect |
 | `--output` | `-o` | `delhi_leads.xlsx` | Output Excel filename |
+
+---
+
+## 🛠️ Post-Processing & Pitch Workflow
+
+Once you have collected your leads using `scraper.py`, you can run the post-processing and pitching pipeline:
+
+### 1. Filter Leads
+Filter out big brands, malls, and chains to isolate small/local businesses:
+```powershell
+python filter_leads.py
+```
+This reads `delhi_leads.xlsx` and outputs a cleaned, priority-sorted sheet `delhi_leads_clean.xlsx`.
+
+### 2. Manage Database and Statuses
+View database statistics or list/update lead status (e.g. `scraped`, `qualified`, `deal_cracked`):
+```powershell
+# Show summary statistics
+python manage_leads.py --stats
+
+# List qualified leads
+python manage_leads.py --list --status qualified
+
+# Update status of a specific lead
+python manage_leads.py --update --name "Aroma Spa" --address "Hauz Khas" --status qualified
+```
+
+### 3. Generate Pitch Page
+Generate a premium website/pitch template under the `clients/` folder for a business:
+```powershell
+python generate_pitch.py "Client Name"
+```
+
+### 4. Deploy Pitch Page
+Deploy the generated client website/pitch directly to your GitHub repository:
+```powershell
+python deploy.py folder_name
+```
 
 ---
 

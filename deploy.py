@@ -4,9 +4,10 @@ import sys
 
 # --- CONFIGURATION ---
 # Change this to your GitHub Repository URL
-REPO_URL = "https://github.com/Pranavrai207/client-pitches.git" 
+REPO_URL = "https://github.com/Pranavrai207/web-studio.git" 
 GITHUB_USERNAME = "Pranavrai207"
-REPO_NAME = "client-pitches"
+REPO_NAME = "web-studio"
+
 
 def run_git(commands):
     """Executes a list of git commands."""
