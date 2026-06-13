@@ -312,6 +312,8 @@ def extract_business_data(page: Page, max_results: int) -> list[dict]:
     # ── Scroll loop: keep scrolling + extracting until we hit max_results ──
     scroll_cycles = 0
     max_scroll_cycles = getattr(config, 'MAX_SCROLL_CYCLES', 25)  # from config
+    processed_count = 0
+    no_new_cards_retry = 0
 
     while len(results) < max_results and scroll_cycles < max_scroll_cycles:
         scroll_cycles += 1
@@ -321,7 +323,21 @@ def extract_business_data(page: Page, max_results: int) -> list[dict]:
         logger.info("Cycle %d: found %d cards, collected %d so far",
                     scroll_cycles, len(cards), len(results))
 
-        for card in cards:
+        # Check if there are any new cards to process
+        if len(cards) <= processed_count:
+            no_new_cards_retry += 1
+            if no_new_cards_retry >= 3:
+                logger.info("No new cards found after scrolling 3 times. Reached end of results.")
+                break
+            logger.info("No new cards found. Retrying scroll (%d/3)...", no_new_cards_retry)
+            scroll_results(page)
+            human_delay(2, 4)
+            continue
+
+        no_new_cards_retry = 0  # reset retry counter if we have new cards
+        new_cards = cards[processed_count:]
+
+        for card in new_cards:
             if len(results) >= max_results:
                 break
 
@@ -375,6 +391,8 @@ def extract_business_data(page: Page, max_results: int) -> list[dict]:
             seen_keys.add(dedup_key)
             results.append(business)
             logger.info("[%d/%d] Added prospect: %s (Rival: %s)", len(results), max_results, business["Name"], comp_name)
+
+        processed_count += len(new_cards)
 
         if len(results) < max_results:
             scroll_results(page)  # load more listings
@@ -680,83 +698,82 @@ def _parse_reviews(text: str) -> Optional[int]:
 #  5. save_to_excel()
 # ─────────────────────────────────────────────────────────────────────────────
 
-def save_to_excel(data: list[dict], filepath: str) -> None:
+def save_to_excel(filepath: str) -> None:
     """
-    Convert the collected records to a pandas DataFrame and write to .xlsx
+    Query all active prospects (status = 'scraped') from the database and write to .xlsx
     with auto-sized columns and a styled header row.
 
     Args:
-        data     : List of business dicts.
         filepath : Destination .xlsx path.
     """
-    if not data:
-        logger.warning("No data to save.")
-        return
+    logger.info("Saving active prospects from database to %s ...", filepath)
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.execute("SELECT * FROM leads WHERE status = 'scraped'")
+            rows = cur.fetchall()
+            
+        if not rows:
+            logger.warning("No scraped prospects found in database to save.")
+            return
 
-    # Final pass to improve competitor matching using all newly scraped data
-    logger.info("Improving competitor matches with newly scraped data...")
-    for r in data:
-        comp_name, comp_web = db_manager.find_competitor_for_lead(r.get("Category", "N/A"), r.get("Address", "N/A"))
-        if comp_name != "N/A":
-            r["Competitor Name"] = comp_name
-            r["Competitor Website"] = comp_web
-            db_manager.update_lead_competitor_info(r["Name"], r["Address"], comp_name, comp_web)
+        data = []
+        for r in rows:
+            data.append({
+                "Name"               : r["name"] or "N/A",
+                "Rating"             : r["rating"] if r["rating"] is not None else "N/A",
+                "Total Reviews"      : r["reviews"] if r["reviews"] is not None else "N/A",
+                "Address"            : r["address"] or "N/A",
+                "Phone"              : r["phone"] or "N/A",
+                "Website"            : r["website"] or "N/A",
+                "Category"           : r["category"] or "N/A",
+                "Maps URL"           : r["maps_url"] or "N/A",
+                "Priority"           : r["priority"] or "[LOW] Low",
+                "Competitor Name"    : r["competitor_name"] or "N/A",
+                "Competitor Website" : r["competitor_website"] or "N/A"
+            })
 
-    df = pd.DataFrame(data, columns=[
-        "Name", "Rating", "Total Reviews",
-        "Address", "Phone", "Website",
-        "Category", "Maps URL", "Priority",
-        "Competitor Name", "Competitor Website"
-    ])
+        df = pd.DataFrame(data, columns=[
+            "Name", "Rating", "Total Reviews",
+            "Address", "Phone", "Website",
+            "Category", "Maps URL", "Priority",
+            "Competitor Name", "Competitor Website"
+        ])
 
-    # ── Priority Sorting ─────────────────────────────────────────────
-    # Sort: High (1) -> Medium (2) -> Low (3)
-    priority_map = {"[HIGH] High": 1, "[MEDIUM] Medium": 2, "[LOW] Low": 3}
+        # ── Priority Sorting ─────────────────────────────────────────────
+        # Sort: High (1) -> Medium (2) -> Low (3)
+        priority_map = {"[HIGH] High": 1, "[MEDIUM] Medium": 2, "[LOW] Low": 3}
+        df["_priority_sort"] = df["Priority"].map(priority_map).fillna(99)
+        df = df.sort_values(by=["_priority_sort", "Name"]).drop(columns=["_priority_sort"])
 
-    # ── Load existing data if file exists ─────────────────────────────
-    import os
-    if os.path.exists(filepath):
-        try:
-            df_old = pd.read_excel(filepath)
-            # Merge new with old, drop duplicates based on Name and Address
-            df = pd.concat([df_old, df], ignore_index=True)
-            df.drop_duplicates(subset=["Name", "Address"], keep="first", inplace=True)
-            logger.info("Merged %d new leads with existing data.", len(data))
-        except Exception as e:
-            logger.warning("Could not merge with existing file: %s", e)
+        with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Delhi Leads")
 
-    df["_priority_sort"] = df["Priority"].map(priority_map).fillna(99)
-    df = df.sort_values(by=["_priority_sort", "Name"]).drop(columns=["_priority_sort"])
+            ws = writer.sheets["Delhi Leads"]
 
-    logger.info("Saving %d total unique records to %s ...", len(df), filepath)
+            # ── Auto-size columns ──────────────────────────────────────────
+            for col_cells in ws.columns:
+                max_len = max(
+                    len(str(cell.value or "")) for cell in col_cells
+                )
+                ws.column_dimensions[col_cells[0].column_letter].width = min(max_len + 4, 60)
 
-    with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Delhi Leads")
+            # ── Style header row ───────────────────────────────────────────
+            from openpyxl.styles import Font, PatternFill, Alignment
 
-        ws = writer.sheets["Delhi Leads"]
+            header_fill = PatternFill("solid", fgColor="1F4E79")   # dark navy
+            header_font = Font(color="FFFFFF", bold=True, size=11)
 
-        # ── Auto-size columns ──────────────────────────────────────────
-        for col_cells in ws.columns:
-            max_len = max(
-                len(str(cell.value or "")) for cell in col_cells
-            )
-            ws.column_dimensions[col_cells[0].column_letter].width = min(max_len + 4, 60)
+            for cell in ws[1]:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-        # ── Style header row ───────────────────────────────────────────
-        from openpyxl.styles import Font, PatternFill, Alignment
+            # Freeze top row
+            ws.freeze_panes = "A2"
 
-        header_fill = PatternFill("solid", fgColor="1F4E79")   # dark navy
-        header_font = Font(color="FFFFFF", bold=True, size=11)
-
-        for cell in ws[1]:
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-
-        # Freeze top row
-        ws.freeze_panes = "A2"
-
-    logger.info("[SUCCESS] Excel saved: %s", filepath)
+        logger.info("[SUCCESS] Excel saved: %s", filepath)
+    except Exception as e:
+        logger.error("Failed to save leads to Excel: %s", e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -897,7 +914,7 @@ def main() -> None:
                          cn, name_freq[cn])
 
     if all_records:
-        save_to_excel(all_records, args.output)
+        save_to_excel(args.output)
         print(f"\n[DONE] Done! {len(all_records)} leads saved to '{args.output}'")
     else:
         logger.warning("No records collected. Excel file was not created.")

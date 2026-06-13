@@ -94,17 +94,62 @@ def filter_excel(input_file: str, output_file: str) -> None:
         lambda row: _score_lead(row.get("Website", "N/A"), row.get("Rating")),
         axis=1
     )
+
+    # Helper to identify locality
+    def get_locality(address):
+        if not isinstance(address, str):
+            return "other"
+        addr_lower = address.lower()
+        localities = [
+            "hauz khas", "dwarka", "rajouri", "connaught", "lajpat", 
+            "karol bagh", "saket", "uttam nagar", "shahpur jat", "janakpuri", "subhash nagar"
+        ]
+        for loc in localities:
+            if loc in addr_lower:
+                return loc
+        return "other"
+
+    # Locality clean names map
+    locality_names = {
+        "hauz khas": "Hauz Khas",
+        "dwarka": "Dwarka",
+        "rajouri": "Rajouri Garden",
+        "connaught": "Connaught Place",
+        "lajpat": "Lajpat Nagar",
+        "karol bagh": "Karol Bagh",
+        "saket": "Saket",
+        "uttam nagar": "Uttam Nagar",
+        "shahpur jat": "Shahpur Jat",
+        "janakpuri": "Janakpuri",
+        "subhash nagar": "Subhash Nagar",
+        "other": "Other"
+    }
+
+    # Add Locality column
+    df_clean["Locality"] = df_clean["Address"].apply(get_locality).map(locality_names).fillna("Other")
+
+    # Add locality helper for grouping
+    df_clean["_locality"] = df_clean["Address"].apply(get_locality)
     
-    # ── Priority Sorting ─────────────────────────────────────────────
+    # ── Locality & Priority Sorting ──────────────────────────────────
     # Sort: High (1) -> Medium (2) -> Low (3)
     priority_map = {"[HIGH] High": 1, "[MEDIUM] Medium": 2, "[LOW] Low": 3}
     df_clean["_priority_sort"] = df_clean["Priority"].map(priority_map).fillna(99)
-    df_clean = df_clean.sort_values(by=["_priority_sort", "Name"]).drop(columns=["_priority_sort"]).reset_index(drop=True)
+    
+    # Sort by locality first (so same location is grouped), then priority, then name
+    df_clean = df_clean.sort_values(by=["_locality", "_priority_sort", "Name"]).drop(columns=["_priority_sort", "_locality"]).reset_index(drop=True)
+
+    # Reorder columns to place Locality right after Address
+    cols = [
+        "Name", "Rating", "Total Reviews", "Address", "Locality", "Phone", 
+        "Website", "Category", "Maps URL", "Priority", "Competitor Name", "Competitor Website"
+    ]
+    df_clean = df_clean[cols]
 
     removed = total_before - len(df_clean)
 
     print(f"   Removed (brands/malls/chains): {removed}")
-    print(f"[SUCCESS] Remaining local business leads (sorted by Priority): {len(df_clean)}")
+    print(f"[SUCCESS] Remaining local business leads (grouped by Locality): {len(df_clean)}")
 
     # Save cleaned file
     with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
@@ -112,6 +157,39 @@ def filter_excel(input_file: str, output_file: str) -> None:
         ws = writer.sheets["Delhi Leads"]
 
         from openpyxl.styles import Font, PatternFill, Alignment
+
+        # Define 5 slightly darker, rich but warm pastel colors (eye-friendly)
+        fills = {
+            "blue": PatternFill(start_color="C9DAF8", end_color="C9DAF8", fill_type="solid"),
+            "pink": PatternFill(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid"),
+            "peach": PatternFill(start_color="FCE5CD", end_color="FCE5CD", fill_type="solid"),
+            "cream": PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid"),
+            "green": PatternFill(start_color="D9EAD3", end_color="D9EAD3", fill_type="solid"),
+            "white": PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid"),
+        }
+
+        # Dynamically map unique localities to the 5 soft colors
+        unique_localities = []
+        for addr in df_clean["Address"]:
+            loc = get_locality(addr)
+            if loc not in unique_localities and loc != "other":
+                unique_localities.append(loc)
+
+        color_order = ["blue", "pink", "peach", "cream", "green"]
+        locality_colors = {}
+        for idx, loc in enumerate(unique_localities):
+            color_name = color_order[idx % len(color_order)]
+            locality_colors[loc] = fills[color_name]
+
+        # Apply pastel row fills (excluding header)
+        for r_idx, row_cells in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row), start=2):
+            addr = df_clean.iloc[r_idx - 2]["Address"]
+            loc = get_locality(addr)
+            fill_to_apply = locality_colors.get(loc, fills["white"])
+            for cell in row_cells:
+                cell.fill = fill_to_apply
+
+        # Style header row
         header_fill = PatternFill("solid", fgColor="1F4E79")
         header_font = Font(color="FFFFFF", bold=True, size=11)
 

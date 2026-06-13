@@ -233,9 +233,10 @@ BRAND_BLACKLIST = {
 # --- Platform Domains (Considered "No Personal Website") ---
 # Links to these domains are treated as if the business doesn't have its own site.
 PLATFORM_DOMAINS = [
-    "zomato.com", "swiggy.com", "facebook.com", "instagram.com", 
-    "magicpin.in", "justdial.com", "tripadvisor.com", "yelp.com",
-    "youtube.com", "twitter.com", "linkedin.com"
+    "zomato.com", "zoma.to", "swiggy.com", "swig.gy", "facebook.com", "fb.com", "fb.watch",
+    "instagram.com", "instagr.am", "magicpin.in", "justdial.com", "tripadvisor.com",
+    "yelp.com", "youtube.com", "youtu.be", "twitter.com", "x.com", "t.co", "linkedin.com",
+    "linktr.ee", "bit.ly", "tinyurl.com"
 ]
 
 # Reviews upper limit — big chains have thousands, local businesses stay under this

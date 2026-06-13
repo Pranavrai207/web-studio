@@ -18,7 +18,6 @@ def get_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
-
 def init_db():
     """Initialize the database schema and create required indexes."""
     logger.info("Initializing SQLite database: %s", config.DB_PATH)
@@ -36,12 +35,25 @@ def init_db():
                 status TEXT DEFAULT 'scraped',
                 competitor_name TEXT DEFAULT 'N/A',
                 competitor_website TEXT DEFAULT 'N/A',
+                rating REAL,
+                reviews INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(name, address)
             )
         """)
         
+        # Dynamic migration for existing databases
+        try:
+            conn.execute("ALTER TABLE leads ADD COLUMN rating REAL")
+        except sqlite3.OperationalError:
+            pass # Column already exists
+            
+        try:
+            conn.execute("ALTER TABLE leads ADD COLUMN reviews INTEGER")
+        except sqlite3.OperationalError:
+            pass # Column already exists
+
         # Indexes for fast lookup
         conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_name_addr ON leads(name, address)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_category_status ON leads(category, status)")
@@ -64,6 +76,12 @@ def insert_lead(lead: dict) -> bool:
     maps_url = lead.get("Maps URL", "")
     priority = lead.get("Priority", "[LOW] Low")
     status = lead.get("status", "scraped")
+    rating = lead.get("Rating")
+    if rating == "N/A":
+        rating = None
+    reviews = lead.get("Total Reviews")
+    if reviews == "N/A":
+        reviews = None
     
     # If the lead has a personal website, default status is 'has_website'
     # but don't overwrite if it was already updated by user
@@ -72,19 +90,21 @@ def insert_lead(lead: dict) -> bool:
 
     try:
         with get_connection() as conn:
-            # We use ON CONFLICT to update phone, website, category, maps_url, priority,
+            # We use ON CONFLICT to update phone, website, category, maps_url, priority, rating, reviews
             # but we preserve status and competitor info.
             conn.execute("""
-                INSERT INTO leads (name, address, phone, website, category, maps_url, priority, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO leads (name, address, phone, website, category, maps_url, priority, status, rating, reviews)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(name, address) DO UPDATE SET
                     phone = excluded.phone,
                     website = excluded.website,
                     category = excluded.category,
                     maps_url = excluded.maps_url,
                     priority = excluded.priority,
+                    rating = excluded.rating,
+                    reviews = excluded.reviews,
                     updated_at = CURRENT_TIMESTAMP
-            """, (name, address, phone, website, category, maps_url, priority, status))
+            """, (name, address, phone, website, category, maps_url, priority, status, rating, reviews))
             conn.commit()
             return True
     except Exception as e:
@@ -149,7 +169,11 @@ def clean_address_tokens(address: str) -> list[str]:
         "delhi", "new", "india", "road", "gali", "phase", "sector", "block", 
         "pocket", "near", "opposite", "behind", "metro", "station", "building",
         "floor", "market", "enclave", "colony", "nagar", "bagh", "khas", "place",
-        "extension", "vihar", "chowk", "marg", "west", "east", "north", "south"
+        "extension", "vihar", "chowk", "marg", "west", "east", "north", "south",
+        "garden", "park", "house", "complex", "plaza", "tower", "towers", "arcade",
+        "centre", "center", "mall", "square", "lane", "street", "line", "highway",
+        "hwy", "flyover", "village", "gate", "shop", "showroom", "main", "highstreet",
+        "above", "below", "ground", "first", "second", "third"
     }
     
     # Clean and split address
@@ -206,7 +230,7 @@ def find_competitor_for_lead(lead_category: str, lead_address: str) -> tuple[str
             # 2. Score candidates by address token overlap
             lead_tokens = set(clean_address_tokens(lead_address))
             best_candidate = None
-            max_overlap = -1
+            max_overlap = 0
             
             for candidate in candidates:
                 candidate_tokens = set(clean_address_tokens(candidate["address"]))
