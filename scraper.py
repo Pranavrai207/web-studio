@@ -1,6 +1,6 @@
 """
 ================================================================================
- scraper.py — Delhi Local Business Lead Generation Scraper
+ scraper.py - Delhi Local Business Lead Generation Scraper
 ================================================================================
  Tool Stack : Playwright (Chromium) + pandas + openpyxl
  Author     : Antigravity
@@ -19,8 +19,10 @@ from typing import Optional
 
 import pandas as pd
 from playwright.sync_api import Page, Playwright, sync_playwright, TimeoutError as PlaywrightTimeout
+from playwright_stealth import Stealth
 
 import config
+import db_manager
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  LOGGING SETUP
@@ -51,7 +53,7 @@ def human_delay(min_s: float = None, max_s: float = None) -> None:
     lo = min_s if min_s is not None else config.MIN_DELAY
     hi = max_s if max_s is not None else config.MAX_DELAY
     duration = random.uniform(lo, hi)
-    logger.debug("Sleeping %.2fs …", duration)
+    logger.debug("Sleeping %.2fs ...", duration)
     time.sleep(duration)
 
 
@@ -62,12 +64,24 @@ def human_delay(min_s: float = None, max_s: float = None) -> None:
 def initialize_browser(playwright: Playwright):
     """
     Launch a Chromium browser with realistic viewport and user-agent settings
-    to reduce the chance of bot detection.
+    along with stealth evasions to bypass bot detection.
 
     Returns:
         tuple[Browser, BrowserContext, Page]
     """
-    logger.info("Launching Chromium browser …")
+    logger.info("Launching Chromium browser ...")
+
+    # Select random user-agent
+    ua_list = getattr(config, 'USER_AGENTS', [])
+    user_agent = random.choice(ua_list) if ua_list else (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    )
+    logger.info("Using randomized User-Agent: %s", user_agent)
+
+    # Randomized viewport size
+    viewport_width = random.randint(1366, 1600)
+    viewport_height = random.randint(768, 900)
+    logger.info("Using randomized Viewport: %dx%d", viewport_width, viewport_height)
 
     browser = playwright.chromium.launch(
         headless=config.HEADLESS,
@@ -82,16 +96,14 @@ def initialize_browser(playwright: Playwright):
 
     # Realistic desktop context
     context = browser.new_context(
-        viewport={"width": 1366, "height": 768},
-        user_agent=(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/122.0.0.0 Safari/537.36"
-        ),
+        viewport={"width": viewport_width, "height": viewport_height},
+        user_agent=user_agent,
         locale="en-IN",
         timezone_id="Asia/Kolkata",
         geolocation={"latitude": 28.6139, "longitude": 77.2090},  # New Delhi
         permissions=["geolocation"],
+        device_scale_factor=random.choice([1.0, 1.25, 1.5]),
+        has_touch=random.choice([True, False]),
     )
 
     # Mask navigator.webdriver property
@@ -100,6 +112,15 @@ def initialize_browser(playwright: Playwright):
     )
 
     page = context.new_page()
+
+    # Apply playwright-stealth
+    if getattr(config, 'STEALTH_ENABLED', True):
+        try:
+            Stealth().apply_stealth_sync(page)
+            logger.info("Playwright stealth applied successfully.")
+        except Exception as e:
+            logger.warning("Failed to apply playwright-stealth: %s", e)
+
     logger.info("Browser ready.")
     return browser, context, page
 
@@ -113,7 +134,7 @@ def perform_search(page: Page, query: str) -> bool:
     Navigate to Google Maps and enter the search query.
     Waits for the results panel to appear.
 
-    Key fix: use 'domcontentloaded' NOT 'networkidle' — Google Maps streams
+    Key fix: use 'domcontentloaded' NOT 'networkidle' - Google Maps streams
     map tiles indefinitely so networkidle never fires, causing a 30-second hang.
 
     Args:
@@ -128,7 +149,7 @@ def perform_search(page: Page, query: str) -> bool:
     logger.info("Navigating to: %s", search_url)
 
     try:
-        # Use 'domcontentloaded' — Maps never reaches 'networkidle'
+        # Use 'domcontentloaded' - Maps never reaches 'networkidle'
         page.goto(search_url, wait_until="domcontentloaded", timeout=45_000)
         human_delay(3, 5)
 
@@ -149,7 +170,7 @@ def perform_search(page: Page, query: str) -> bool:
             except Exception:
                 pass
 
-        # Wait for the results feed — try multiple known selectors
+        # Wait for the results feed - try multiple known selectors
         FEED_SELECTORS = [
             'div[role="feed"]',
             'div[aria-label*="Results"]',
@@ -163,7 +184,7 @@ def perform_search(page: Page, query: str) -> bool:
                 feed_found = True
                 break
             except PlaywrightTimeout:
-                logger.debug("Selector not found: %s — trying next …", sel)
+                logger.debug("Selector not found: %s - trying next ...", sel)
                 continue
 
         if not feed_found:
@@ -189,7 +210,7 @@ def scroll_results(page: Page) -> None:
     Gradually scroll the results panel to load more listings.
     Uses incremental, randomised scroll amounts to mimic human behaviour.
     """
-    logger.info("Scrolling results panel …")
+    logger.info("Scrolling results panel ...")
 
     try:
         # Locate the scrollable feed panel
@@ -222,20 +243,20 @@ def _is_platform_website(url: str) -> bool:
 def _score_lead(website: str, rating: Optional[float]) -> str:
     """
     Assign a lead priority score based on strict rules:
-    - No website link at all ("N/A") -> "🔥 High"
-    - Platform link + High rating   -> "🟡 Medium"
-    - Platform link + Low rating    -> "🟢 Low"
+    - No website link at all ("N/A") -> "[HIGH] High"
+    - Platform link + High rating   -> "[MEDIUM] Medium"
+    - Platform link + Low rating    -> "[LOW] Low"
     """
     if not website or website == "N/A":
-        return "🔥 High"
+        return "[HIGH] High"
     
     if _is_platform_website(website):
         if rating and rating >= config.HIGH_RATING_THRESHOLD:
-            return "🟡 Medium"
-        return "🟢 Low"
+            return "[MEDIUM] Medium"
+        return "[LOW] Low"
     
     # This point should not be reached due to filtering, but return Low as fallback
-    return "🟢 Low"
+    return "[LOW] Low"
 
 
 def _is_local_business(name: str, reviews: Optional[int]) -> bool:
@@ -286,7 +307,7 @@ def extract_business_data(page: Page, max_results: int) -> list[dict]:
     results: list[dict] = []
     seen_keys: set[str] = set()  # deduplication set
 
-    logger.info("Extracting business data (target: %d) …", max_results)
+    logger.info("Extracting business data (target: %d) ...", max_results)
 
     # ── Scroll loop: keep scrolling + extracting until we hit max_results ──
     scroll_cycles = 0
@@ -315,19 +336,34 @@ def extract_business_data(page: Page, max_results: int) -> list[dict]:
             ):
                 continue
 
-            # ── Personal Website Filter ──────────────────────────────────
-            # Skip if business has a personal website (not a platform link)
+            # ── Personal Website Classification & Database Sync ──────────
             website = business.get('Website', 'N/A')
-            if website != "N/A" and not _is_platform_website(website):
-                logger.debug("Personal website filtered out: %s (%s)", business["Name"], website)
+            is_personal_site = (website != "N/A" and not _is_platform_website(website))
+            
+            if is_personal_site:
+                # Store business with website as competitor in DB
+                business["status"] = "has_website"
+                db_manager.insert_lead(business)
+                logger.debug("Competitor website saved to SQLite: %s (%s)", business["Name"], website)
                 continue
+            
+            # Lead is a prospect (no personal website)
+            business["status"] = "scraped"
+            
+            # Find a local competitor with a website for matching
+            comp_name, comp_web = db_manager.find_competitor_for_lead(business["Category"], business["Address"])
+            business["Competitor Name"] = comp_name
+            business["Competitor Website"] = comp_web
+            
+            # Save prospect to SQLite
+            db_manager.insert_lead(business)
 
             # ── Phone Number Requirement Filter ──────────────────────────
             # Skip if business has no phone number (if required in config)
             if getattr(config, 'REQUIRE_PHONE_NUMBER', False):
                 phone = business.get('Phone', 'N/A')
                 if not phone or phone == "N/A":
-                    logger.debug("No phone number found — skipping: %s", business["Name"])
+                    logger.debug("No phone number found - skipping: %s", business["Name"])
                     continue
 
             # Deduplication check
@@ -338,7 +374,7 @@ def extract_business_data(page: Page, max_results: int) -> list[dict]:
 
             seen_keys.add(dedup_key)
             results.append(business)
-            logger.info("[%d/%d] Added: %s", len(results), max_results, business["Name"])
+            logger.info("[%d/%d] Added prospect: %s (Rival: %s)", len(results), max_results, business["Name"], comp_name)
 
         if len(results) < max_results:
             scroll_results(page)  # load more listings
@@ -426,13 +462,13 @@ def _extract_single_card(page: Page, card) -> Optional[dict]:
             return None  # not a valid business card
 
         # ── Chain / Franchise Signal Check ───────────────────────────────
-        # Ask Google Maps itself if this is a chain — before scraping anything
+        # Ask Google Maps itself if this is a chain - before scraping anything
         if _has_chain_signal(page):
-            logger.debug("Chain detected via Maps signal: %s — skipping", name)
+            logger.debug("Chain detected via Maps signal: %s - skipping", name)
             return None
 
         # ── Rating ────────────────────────────────────────────────────────
-        # Try multiple selector patterns — Google Maps changes class names often
+        # Try multiple selector patterns - Google Maps changes class names often
         rating_str = ""
         for r_sel in [
             'span.ceNzKf',
@@ -470,7 +506,7 @@ def _extract_single_card(page: Page, card) -> Optional[dict]:
         reviews = _parse_reviews(reviews_str)
         # ── Ultimate Gatekeeper: Review Count ─────────────────────────────
         if reviews and reviews > config.MAX_REVIEWS_FOR_LOCAL:
-            logger.debug("High reviews (%d) detected (Gatekeeper) — skipping %s", reviews, name)
+            logger.debug("High reviews (%d) detected (Gatekeeper) - skipping %s", reviews, name)
             return None
 
         # ── Address ───────────────────────────────────────────────────────
@@ -491,7 +527,7 @@ def _extract_single_card(page: Page, card) -> Optional[dict]:
                 phone = href.replace("tel:", "").strip()
 
         # ── Website URL ───────────────────────────────────────────────────
-        # Must start with http/https — reject Maps UI text like "Add website"
+        # Must start with http/https - reject Maps UI text like "Add website"
         website = ""
         for w_sel in [
             'a[data-item-id="authority"]',
@@ -505,7 +541,7 @@ def _extract_single_card(page: Page, card) -> Optional[dict]:
 
         # ── Check B: Website franchise signal ─────────────────────────────
         if _is_franchise_website(website):
-            logger.debug("Franchise website detected: %s — skipping %s", website, name)
+            logger.debug("Franchise website detected: %s - skipping %s", website, name)
             return None
 
         # ── Check C: Address franchise signal ─────────────────────────────
@@ -514,7 +550,7 @@ def _extract_single_card(page: Page, card) -> Optional[dict]:
         # - Soft signals (Complex/Society) -> Skip ONLY if reviews > 1000
         is_high_conf, is_soft = _check_address_signals(address)
         if is_high_conf:
-            logger.debug("High-confidence chain address detected: %s — skipping %s", address, name)
+            logger.debug("High-confidence chain address detected: %s - skipping %s", address, name)
             return None
         # (Soft signal review check is now handled by the global Gatekeeper above)
 
@@ -531,19 +567,21 @@ def _extract_single_card(page: Page, card) -> Optional[dict]:
         priority = _score_lead(website, rating)
 
         return {
-            "Name"          : name or "N/A",
-            "Rating"        : rating if rating else "N/A",
-            "Total Reviews" : reviews or "N/A",
-            "Address"       : address or "N/A",
-            "Phone"         : phone or "N/A",
-            "Website"       : website or "N/A",
-            "Category"      : category or "N/A",
-            "Maps URL"      : maps_url,
-            "Priority"      : priority,
+            "Name"               : name or "N/A",
+            "Rating"             : rating if rating else "N/A",
+            "Total Reviews"      : reviews or "N/A",
+            "Address"            : address or "N/A",
+            "Phone"              : phone or "N/A",
+            "Website"            : website or "N/A",
+            "Category"           : category or "N/A",
+            "Maps URL"           : maps_url,
+            "Priority"           : priority,
+            "Competitor Name"    : "N/A",
+            "Competitor Website" : "N/A",
         }
 
     except PlaywrightTimeout:
-        logger.warning("Timeout opening listing card — skipping.")
+        logger.warning("Timeout opening listing card - skipping.")
         return None
     except Exception as exc:
         logger.warning("Failed to extract card data: %s", exc)
@@ -555,7 +593,7 @@ def _extract_single_card(page: Page, card) -> Optional[dict]:
 def _is_franchise_website(url: str) -> bool:
     """
     Check B: Franchise websites almost always reveal themselves via URL
-    or page title keywords — no need to visit the page.
+    or page title keywords - no need to visit the page.
 
     Franchise signals in URL:
       - /franchise  /own-a-franchise  /become-a-partner
@@ -655,15 +693,25 @@ def save_to_excel(data: list[dict], filepath: str) -> None:
         logger.warning("No data to save.")
         return
 
+    # Final pass to improve competitor matching using all newly scraped data
+    logger.info("Improving competitor matches with newly scraped data...")
+    for r in data:
+        comp_name, comp_web = db_manager.find_competitor_for_lead(r.get("Category", "N/A"), r.get("Address", "N/A"))
+        if comp_name != "N/A":
+            r["Competitor Name"] = comp_name
+            r["Competitor Website"] = comp_web
+            db_manager.update_lead_competitor_info(r["Name"], r["Address"], comp_name, comp_web)
+
     df = pd.DataFrame(data, columns=[
         "Name", "Rating", "Total Reviews",
         "Address", "Phone", "Website",
         "Category", "Maps URL", "Priority",
+        "Competitor Name", "Competitor Website"
     ])
 
     # ── Priority Sorting ─────────────────────────────────────────────
     # Sort: High (1) -> Medium (2) -> Low (3)
-    priority_map = {"🔥 High": 1, "🟡 Medium": 2, "🟢 Low": 3}
+    priority_map = {"[HIGH] High": 1, "[MEDIUM] Medium": 2, "[LOW] Low": 3}
 
     # ── Load existing data if file exists ─────────────────────────────
     import os
@@ -680,7 +728,7 @@ def save_to_excel(data: list[dict], filepath: str) -> None:
     df["_priority_sort"] = df["Priority"].map(priority_map).fillna(99)
     df = df.sort_values(by=["_priority_sort", "Name"]).drop(columns=["_priority_sort"])
 
-    logger.info("Saving %d total unique records to %s …", len(df), filepath)
+    logger.info("Saving %d total unique records to %s ...", len(df), filepath)
 
     with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Delhi Leads")
@@ -708,7 +756,7 @@ def save_to_excel(data: list[dict], filepath: str) -> None:
         # Freeze top row
         ws.freeze_panes = "A2"
 
-    logger.info("✅ Excel saved: %s", filepath)
+    logger.info("[SUCCESS] Excel saved: %s", filepath)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -759,32 +807,53 @@ def main() -> None:
     all_records: list[dict] = []
     seen_global: set[str] = set()
 
+    # ── Initialize SQLite database ──
+    db_manager.init_db()
+
     # ── Load existing leads to seen_global for persistent deduplication ──
+    # 1. From SQLite
+    try:
+        # Load excluded leads (qualified, deal_cracked, disqualified)
+        excluded_keys = db_manager.load_excluded_leads()
+        seen_global.update(excluded_keys)
+        logger.info("Loaded %d excluded leads from SQLite database (will be skipped).", len(excluded_keys))
+        
+        # Load all other leads from SQLite database to prevent duplicate scraping
+        with db_manager.get_connection() as conn:
+            cur = conn.execute("SELECT name, address FROM leads")
+            for row in cur.fetchall():
+                key = f"{row['name'].lower()}|{row['address'].lower()}"
+                seen_global.add(key)
+        logger.info("Deduplication index populated from SQLite. Currently has %d keys.", len(seen_global))
+    except Exception as e:
+        logger.error("Failed to load leads from SQLite database: %s", e)
+
+    # 2. From Excel (for backwards compatibility/safety)
     import os
     if os.path.exists(args.output):
         try:
-            logger.info("Loading existing leads from %s for deduplication …", args.output)
+            logger.info("Loading existing leads from %s for deduplication ...", args.output)
             df_existing = pd.read_excel(args.output)
             for _, row in df_existing.iterrows():
                 key = f"{str(row.get('Name', '')).lower()}|{str(row.get('Address', '')).lower()}"
                 seen_global.add(key)
-            logger.info("Found %d existing leads. These will be skipped.", len(seen_global))
+            logger.info("Total deduplication index has %d keys (SQLite + Excel).", len(seen_global))
         except Exception as e:
-            logger.warning("Failed to load existing leads: %s", e)
+            logger.warning("Failed to load existing leads from Excel: %s", e)
 
     with sync_playwright() as playwright:
         browser, context, page = initialize_browser(playwright)
 
         try:
             for query in queries:
-                logger.info("═" * 60)
+                logger.info("=" * 60)
                 logger.info("Starting query: '%s'  (max %d per query, %d total so far)",
                             query, args.max, len(all_records))
-                logger.info("═" * 60)
+                logger.info("=" * 60)
 
                 success = perform_search(page, query)
                 if not success:
-                    logger.error("Search failed for query: '%s' — skipping.", query)
+                    logger.error("Search failed for query: '%s' - skipping.", query)
                     continue
 
                 records = extract_business_data(page, args.max)
@@ -800,7 +869,7 @@ def main() -> None:
                 human_delay(3, 6)  # polite pause between queries
 
         except KeyboardInterrupt:
-            logger.warning("Interrupted by user — saving collected data before exit …")
+            logger.warning("Interrupted by user - saving collected data before exit ...")
         except Exception as exc:
             logger.error("Unexpected error: %s", exc, exc_info=True)
         finally:
@@ -829,10 +898,10 @@ def main() -> None:
 
     if all_records:
         save_to_excel(all_records, args.output)
-        print(f"\n🎯 Done! {len(all_records)} leads saved to '{args.output}'")
+        print(f"\n[DONE] Done! {len(all_records)} leads saved to '{args.output}'")
     else:
         logger.warning("No records collected. Excel file was not created.")
-        print("\n⚠️  No records collected. Please check your internet connection or selectors.")
+        print("\n[WARNING]  No records collected. Please check your internet connection or selectors.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

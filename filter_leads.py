@@ -7,6 +7,13 @@ Run this AFTER scraper.py finishes:
     python filter_leads.py --input delhi_leads.xlsx --output delhi_leads_clean.xlsx
 """
 
+import sys
+# Set stdout/stderr encoding to utf-8 to prevent charmap crashes on Windows
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8')
+
 import argparse
 import pandas as pd
 import config
@@ -22,11 +29,11 @@ def _is_platform_website(url: str) -> bool:
 def _score_lead(website: str, rating: float) -> str:
     """Assign priority based on website presence and rating."""
     if not isinstance(website, str) or website == "N/A":
-        return "🔥 High"
+        return "[HIGH] High"
     if _is_platform_website(website):
         if rating and rating >= config.HIGH_RATING_THRESHOLD:
-            return "🟡 Medium"
-        return "🟢 Low"
+            return "[MEDIUM] Medium"
+        return "[LOW] Low"
     return None # Signals this should be filtered out
 
 
@@ -64,7 +71,7 @@ def is_local_business(name: str, reviews, website, rating, phone="N/A") -> bool:
 
 
 def filter_excel(input_file: str, output_file: str) -> None:
-    print(f"📂 Reading: {input_file}")
+    print(f"[READING] Reading: {input_file}")
     df = pd.read_excel(input_file)
     total_before = len(df)
     print(f"   Total rows before filter: {total_before}")
@@ -90,14 +97,14 @@ def filter_excel(input_file: str, output_file: str) -> None:
     
     # ── Priority Sorting ─────────────────────────────────────────────
     # Sort: High (1) -> Medium (2) -> Low (3)
-    priority_map = {"🔥 High": 1, "🟡 Medium": 2, "🟢 Low": 3}
+    priority_map = {"[HIGH] High": 1, "[MEDIUM] Medium": 2, "[LOW] Low": 3}
     df_clean["_priority_sort"] = df_clean["Priority"].map(priority_map).fillna(99)
     df_clean = df_clean.sort_values(by=["_priority_sort", "Name"]).drop(columns=["_priority_sort"]).reset_index(drop=True)
 
     removed = total_before - len(df_clean)
 
     print(f"   Removed (brands/malls/chains): {removed}")
-    print(f"✅ Remaining local business leads (sorted by Priority): {len(df_clean)}")
+    print(f"[SUCCESS] Remaining local business leads (sorted by Priority): {len(df_clean)}")
 
     # Save cleaned file
     with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
@@ -119,7 +126,7 @@ def filter_excel(input_file: str, output_file: str) -> None:
 
         ws.freeze_panes = "A2"
 
-    print(f"💾 Saved clean file: {output_file}")
+    print(f"[SUCCESS] Saved clean file: {output_file}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+leads.db
+scraper.log
+delhi_leads_clean.xlsx
+delhi_leads_test_clean.xlsx
